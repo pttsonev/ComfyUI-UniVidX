@@ -1,0 +1,37 @@
+ComfyUI-UniVidX
+Copyright (c) 2026 Petar Tsonev
+
+Acknowledgement and third-party notice
+
+UniVidX
+https://github.com/houyuanchen111/UniVidX
+Copyright (c) the UniVidX authors
+Licensed under the Apache License, Version 2.0.
+
+ComfyUI-UniVidX vendors UniVidX in full at a pinned commit under
+vendor/univid/, and reuses it unmodified: the denoising loop, Cross-Modal
+Self-Attention, per-modality LoRA routing, the schedulers, the VAE and text
+encoder, and every decode branch are upstream's own code. This pack replaces
+only model loading, so that weights resolve through ComfyUI's model
+directories instead of paths relative to the process working directory.
+
+Upstream's own licence text is preserved verbatim at vendor/univid/LICENSE.
+Upstream ships no NOTICE file, so there is none to reproduce. The pinned
+commit, the contents of the snapshot, and the procedure for refreshing it are
+recorded in vendor/univid/VENDOR.md.
+
+The published UniVidX model weights (univid_intrinsic.safetensors and
+univid_alpha.safetensors) are distributed by their authors under the Apache
+License, Version 2.0, and are not redistributed here.
+
+UniVidX builds on Wan2.1-T2V-14B (Wan-AI) and DiffSynth-Studio (ModelScope).
+Those components are obtained by the user and are not redistributed here;
+their own licences apply.
+
+A separate third-party ComfyUI wrapper for UniVidX exists under the GNU
+General Public License v3.0. No code from it appears in this pack. Where this
+pack solves a problem that project also solved, the implementation was derived
+from upstream's own source and from documented file formats.
+
+The Apache License, Version 2.0 may be obtained at:
+https://www.apache.org/licenses/LICENSE-2.0

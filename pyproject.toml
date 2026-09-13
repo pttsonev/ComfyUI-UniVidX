@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-unividx"
+version = "0.2.0"
+description = "Intrinsic and alpha video decomposition with UniVidX for ComfyUI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Petar Tsonev"}]
+# Derived by walking the vendored upstream's import chain, not copied from its
+# requirement.txt: that file lists training-only packages (imageio, protobuf, pandas,
+# datasets — none imported under vendor/univid/src) and omits real import-time needs
+# (numpy, tqdm, Pillow). `modelscope` is required at import even though this pack never
+# downloads anything, because upstream imports it unconditionally in src/pipelines/util.py
+# and src/models/downloader.py; it is the one entry here that ComfyUI does not already ship.
+dependencies = [
+    "torch", "torchvision", "transformers", "safetensors", "einops",
+    "numpy", "tqdm", "Pillow", "peft", "accelerate", "ftfy",
+    "modelscope", "sentencepiece",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+# `vendor/univid/` is deliberately NOT listed below. ComfyUI loads a custom-node
+# pack from its directory, so the vendored upstream is always present on disk
+# beside this file, and the loader resolves it (and its DiT config) relative to
+# the package. A `pip install .` here exists to pull dependencies, not to ship
+# the engine; enumerating upstream's ten subpackages plus its JSON as package
+# data would create a second, silently-drifting copy inside site-packages.
+[tool.setuptools]
+packages = ["comfyui_unividx", "comfyui_unividx.univid", "comfyui_unividx.nodes"]
+package-dir = {comfyui_unividx = "."}
+include-package-data = false
+license-files = ["LICENSE", "NOTICE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

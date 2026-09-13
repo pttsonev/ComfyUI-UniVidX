@@ -1,0 +1,33 @@
+# ComfyUI core already ships torch/torchvision/numpy/tqdm/Pillow/transformers/safetensors;
+# these are floors only. The list below was derived by walking the import chain of the
+# vendored upstream (vendor/univid/src/pipelines/univid_*.py), not copied from upstream's
+# requirement.txt — several entries there are training-only and several real import-time
+# needs were missing from it.
+torch
+torchvision
+transformers
+safetensors
+einops
+numpy
+tqdm
+Pillow
+
+# Import-time via ..trainers.util, which univid_intrinsic.py imports for
+# DiffusionTrainingModule. peft carries the per-modality LoRA machinery we reuse.
+peft
+accelerate
+
+# Import-time in the prompter's text cleaning.
+ftfy
+
+# Needed at import even though this pack never downloads anything: upstream imports it
+# unconditionally in src/pipelines/util.py and src/models/downloader.py (reached via
+# src/models/__init__.py -> model_manager). Unlike the others it does NOT ship with
+# ComfyUI, so it is the one entry here a user must actually install.
+modelscope
+
+# Runtime, not import-time: transformers needs it to build the umt5 tokenizer.
+sentencepiece
+
+# Deliberately NOT included, though upstream's requirement.txt lists them — nothing under
+# vendor/univid/src imports them: imageio, protobuf, pandas, datasets.
