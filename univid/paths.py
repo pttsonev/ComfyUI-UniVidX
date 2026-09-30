@@ -4,7 +4,7 @@ ComfyUI supplies the model roots; no pack-relative models directory is guessed.
 Without ComfyUI, registration is a no-op and explicit absolute paths still work.
 Filenames select candidates only. Source kinds come from tensor names, shapes,
 dtypes, and scale_weight entries in the safetensors headers, never filenames.
-LightX2V LoRAs are checked for rank-64 Wan T2V targets and complete update pairs.
+LightX2V-style LoRAs are checked for Wan T2V targets and consistent-rank pairs.
 No tensors or runtime dependencies are loaded here.
 """
 
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+import os
 from os import PathLike
 from pathlib import Path
 import struct
@@ -22,26 +23,12 @@ from typing import Literal
 _UNSET = object()
 folder_paths = _UNSET
 
-DIT_NAMES = (
-    "Wan2_1-T2V-14B_fp8_e4m3fn_scaled_KJ.safetensors",
-    "Wan2_1-T2V-14B_fp8_e4m3fn.safetensors",
-)
 CANONICAL_SHARDS = tuple(
     f"diffusion_pytorch_model-{index:05d}-of-00006.safetensors"
     for index in range(1, 7)
 )
-VAE_NAMES = (
-    "Wan2_1_VAE_fp32.safetensors", "wan_2.1_vae.safetensors", "Wan2.1_VAE.pth",
-)
-TEXT_ENCODER_NAMES = (
-    "umt5-xxl-enc-bf16.safetensors", "models_t5_umt5-xxl-enc-bf16.pth",
-)
-CHECKPOINT_NAMES = {
-    "intrinsic": "univid_intrinsic.safetensors",
-    "alpha": "univid_alpha.safetensors",
-}
-LIGHTX2V_NAME = "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors"
-_LIGHTX2V_RANK = 64
+_VARIANTS = frozenset({"intrinsic", "alpha"})
+_TOKENIZER_FILES = frozenset({"spiece.model", "tokenizer.json", "tokenizer_config.json"})
 
 _MAX_HEADER_BYTES = 16 * 1024 * 1024
 _FP8_DTYPES = frozenset({"F8_E4M3", "F8_E5M2"})
@@ -160,7 +147,7 @@ def register_model_folder() -> Path | None:
     registry = _get_folder_paths()
     if registry is None:
         return None
-    directory = (Path(registry.models_dir) / "unividx").resolve()
+    directory = Path(os.path.abspath(Path(registry.models_dir) / "unividx"))
     registry.add_model_folder_path("unividx", str(directory))
     return directory
 
@@ -177,51 +164,42 @@ def _model_roots(category: str) -> tuple[Path, ...]:
         roots = []
     if not roots:
         roots = [Path(registry.models_dir) / category]
-    return tuple(Path(root).resolve() for root in roots)
+    return tuple(Path(os.path.abspath(root)) for root in roots)
 
 
 def _resolve(
     category: str,
-    names: Sequence[str | PathLike[str]],
+    filename: str | PathLike[str],
     *,
     directory: bool = False,
     allow_directory: bool = False,
 ) -> Path:
-    roots = _model_roots(category) if any(not Path(name).is_absolute() for name in names) else ()
+    """Resolve one explicit selection without following model-file or directory links."""
+    if filename is None or not os.fspath(filename).strip():
+        raise ValueError(f"Select an explicit {category} model path.")
+    requested = Path(filename)
+    roots = _model_roots(category) if not requested.is_absolute() else ()
 
     def accepted(path):
         if directory:
-            return path.is_dir()
+            return path.is_dir() and any((path / name).is_file() for name in _TOKENIZER_FILES)
         return path.is_file() or (allow_directory and path.is_dir())
 
-    for name in names:
-        requested = Path(name)
-        if requested.is_absolute():
-            if accepted(requested):
-                return requested.resolve()
-            continue
+    if requested.is_absolute():
+        if accepted(requested):
+            return Path(os.path.abspath(requested))
+    registry = _get_folder_paths()
+    if not requested.is_absolute() and not directory and registry is not None:
+        try:
+            return Path(registry.get_full_path_or_raise(category, os.fspath(filename)))
+        except FileNotFoundError:
+            pass
+    if not requested.is_absolute() and (directory or allow_directory):
         for root in roots:
             candidate = root / requested
-            if accepted(candidate):
-                return candidate.resolve()
-        # Registry roots may contain show/model subdirectories. Match basenames
-        # exactly, so a glob character in a supplied name is never a wildcard.
-        if len(requested.parts) == 1:
-            for root in roots:
-                matches = sorted(
-                    path for path in root.rglob("*")
-                    if path.name == requested.name and accepted(path)
-                    # Skip hidden trees. `hf download --local-dir` leaves a
-                    # .cache/huggingface/download/ mirror of the same directory
-                    # names holding only .metadata stubs; matching it resolves a
-                    # real-looking path with no usable files behind it.
-                    and not any(
-                        part.startswith(".") for part in path.relative_to(root).parts
-                    )
-                )
-                if matches:
-                    return matches[0].resolve()
-    expected = Path(names[0])
+            if candidate.is_dir() and accepted(candidate):
+                return Path(os.path.abspath(candidate))
+    expected = requested
     if expected.is_absolute():
         raise MissingModelFile(expected.name, expected.parent)
     if roots:
@@ -234,9 +212,34 @@ def _resolve(
     raise MissingModelFile(expected.name, locations)
 
 
+def tokenizer_choices() -> list[str]:
+    """List root-relative tokenizer directories, pruning hidden trees and link cycles."""
+    choices = set()
+    for root in _model_roots("unividx"):
+        ancestors = {root: frozenset()}
+        for directory, subdirs, files in os.walk(root, followlinks=True):
+            subdirs[:] = sorted(name for name in subdirs if not name.startswith("."))
+            path = Path(directory)
+            lineage = ancestors.pop(path, frozenset())
+            try:
+                stat = path.stat()
+            except OSError:
+                subdirs[:] = []
+                continue
+            identity = (stat.st_dev, stat.st_ino)
+            if identity in lineage:
+                subdirs[:] = []
+                continue
+            for name in subdirs:
+                ancestors[path / name] = lineage | {identity}
+            if _TOKENIZER_FILES.intersection(files):
+                choices.add(path.relative_to(root).as_posix())
+    return sorted(choices)
+
+
 def read_safetensors_header(path: str | PathLike[str]) -> dict:
     """Read the 8-byte length and JSON header only, with no buffered tensor reads."""
-    path = Path(path).resolve()
+    path = Path(os.path.abspath(path))
     try:
         with path.open("rb", buffering=0) as stream:
             prefix = stream.read(8)
@@ -315,10 +318,26 @@ def state_dict_key_hash(header: dict) -> str:
 def _require_known_model(path: Path, accepted: frozenset, what: str) -> Path:
     """Refuse a look-alike before DiffSynth fails to detect it, or mis-detects it.
 
-    A `.pth` carries no readable header, so it is accepted on upstream's own
-    naming; every `.safetensors` candidate is checked.
+    Sniff non-safetensors names before upstream's extension-based dispatch.
+    Every `.safetensors` selection is checked by its state-dict key hash.
     """
     if path.suffix != ".safetensors":
+        try:
+            read_safetensors_header(path)
+        except ValueError:
+            pass
+        else:
+            raise ValueError(
+                f"{path.name} is a safetensors file with a non-.safetensors name; "
+                "rename it to .safetensors"
+            )
+        if path.suffix == ".pth":
+            with path.open("rb") as stream:
+                prefix = stream.read(8)
+            if not prefix.startswith((b"PK", b"\x80")):
+                raise ValueError(
+                    f"{path.name} is not a zip or pickle .pth file; first bytes: {prefix.hex(' ')}."
+                )
         return path
     digest = state_dict_key_hash(read_safetensors_header(path))
     if digest in accepted:
@@ -405,7 +424,7 @@ def classify_dit(
     """Classify one complete file or six shards from headers, regardless of names."""
     if isinstance(paths, (str, PathLike)):
         paths = (paths,)
-    resolved = tuple(Path(path).resolve() for path in paths)
+    resolved = tuple(Path(os.path.abspath(path)) for path in paths)
     headers = tuple(read_safetensors_header(path) for path in resolved)
     return _classify(resolved, headers)
 
@@ -418,15 +437,13 @@ def _canonical_paths(directory: Path) -> tuple[Path, ...]:
     return paths
 
 
-def resolve_dit(filename: str | PathLike[str] | None = None) -> WeightSource:
-    """Prefer local single files by default, then the canonical six-shard set.
+def resolve_dit(filename: str | PathLike[str]) -> WeightSource:
+    """Classify an explicitly selected single file or canonical six-shard set.
 
-    An explicit filename or canonical directory overrides discovery. Standard
-    shard filenames only locate siblings after a header proves incomplete;
+    Standard shard filenames only locate siblings after a header proves incomplete;
     a complete single file is classified as such even under a shard filename.
     """
-    names = (filename,) if filename is not None else DIT_NAMES + CANONICAL_SHARDS
-    path = _resolve("diffusion_models", names, allow_directory=True)
+    path = _resolve("diffusion_models", filename, allow_directory=True)
     if path.is_dir():
         return classify_dit(_canonical_paths(path))
     header = read_safetensors_header(path)
@@ -435,25 +452,23 @@ def resolve_dit(filename: str | PathLike[str] | None = None) -> WeightSource:
     return _classify((path,), (header,))
 
 
-def resolve_vae(filename: str | PathLike[str] | None = None) -> Path:
+def resolve_vae(filename: str | PathLike[str]) -> Path:
     """Resolve the Wan2.1 VAE, refusing anything DiffSynth would mis-detect."""
-    path = _resolve("vae", (filename,) if filename is not None else VAE_NAMES)
+    path = _resolve("vae", filename)
     return _require_known_model(path, _VAE_HASHES, "Wan2.1 VAE")
 
 
-def resolve_text_encoder(filename: str | PathLike[str] | None = None) -> Path:
+def resolve_text_encoder(filename: str | PathLike[str]) -> Path:
     """Resolve the umt5-xxl encoder, refusing anything DiffSynth would not detect."""
-    path = _resolve(
-        "text_encoders", (filename,) if filename is not None else TEXT_ENCODER_NAMES
-    )
+    path = _resolve("text_encoders", filename)
     return _require_known_model(path, _TEXT_ENCODER_HASHES, "umt5-xxl text encoder")
 
 
-def resolve_checkpoint(variant: str, *, filename: str | PathLike[str] | None = None) -> Path:
+def resolve_checkpoint(variant: str, *, filename: str | PathLike[str]) -> Path:
     """Resolve either UniVidX family checkpoint from the unividx registry roots."""
-    if variant not in CHECKPOINT_NAMES:
+    if variant not in _VARIANTS:
         raise ValueError(f"Unknown UniVidX variant: {variant!r}")
-    return _resolve("unividx", (filename if filename is not None else CHECKPOINT_NAMES[variant],))
+    return _resolve("unividx", filename)
 
 
 def _lora_metadata_number(metadata: dict, names: tuple[str, ...]) -> float | None:
@@ -474,21 +489,20 @@ def _lora_metadata_number(metadata: dict, names: tuple[str, ...]) -> float | Non
 
 
 def classify_lightx2v(path: str | PathLike[str]) -> LoRASource:
-    """Require rank-64 Wan T2V pairs and account for every tensor in the header.
+    """Require consistent-rank Wan T2V pairs and account for every tensor in the header.
 
     Accept PEFT A/B and LightX2V's equivalent down/up naming. This proves
-    architectural compatibility, not training provenance; the filename is only
-    a discovery hint. Unrecognised targets, ranks and extra tensors are refused.
+    architectural compatibility, not training provenance. Unrecognised targets,
+    inconsistent ranks and extra tensors are refused.
     """
-    path = Path(path).resolve()
+    path = Path(os.path.abspath(path))
     header = read_safetensors_header(path)
     metadata = header.get("__metadata__", {})
     if not isinstance(metadata, dict):
         raise ValueError(f"Invalid LightX2V metadata: {path}")
     alpha = _lora_metadata_number(metadata, ("lora_alpha", "ss_network_alpha", "alpha"))
-    rank = _lora_metadata_number(metadata, ("lora_rank", "ss_network_dim", "rank", "r"))
-    if rank is not None and rank != _LIGHTX2V_RANK:
-        raise ValueError(f"LightX2V metadata rank must be {_LIGHTX2V_RANK}, got {rank}: {path}")
+    metadata_rank = _lora_metadata_number(metadata, ("lora_rank", "ss_network_dim", "rank", "r"))
+    ranks = set()
     suffixes = {
         ".lora_A.weight": "A", ".lora_B.weight": "B",
         ".lora_A.default.weight": "A", ".lora_B.default.weight": "B",
@@ -531,12 +545,15 @@ def classify_lightx2v(path: str | PathLike[str]) -> LoRASource:
                 if kind in pair:
                     raise ValueError(f"Duplicate LightX2V {kind} for {weight_name!r}: {path}")
                 out_features, in_features = _WAN_LINEAR_SHAPES[target]
-                expected = [_LIGHTX2V_RANK, in_features] if kind == "A" else [out_features, _LIGHTX2V_RANK]
-                if tensor["shape"] != expected:
+                shape = tensor["shape"]
+                rank = shape[0 if kind == "A" else 1] if len(shape) == 2 else 0
+                expected = [rank, in_features] if kind == "A" else [out_features, rank]
+                if rank <= 0 or shape != expected:
                     raise ValueError(
-                        f"LightX2V {name!r} must have rank {_LIGHTX2V_RANK} and shape "
-                        f"{expected} for Wan2.1-T2V-14B, got {tensor['shape']}: {path}"
+                        f"LightX2V-style LoRA {name!r} must have positive rank and shape "
+                        f"{expected} for Wan2.1-T2V-14B, got {shape}: {path}"
                     )
+                ranks.add(rank)
                 pair[kind] = name
         else:
             parameter = f"{target}.{kind}"
@@ -554,10 +571,15 @@ def classify_lightx2v(path: str | PathLike[str]) -> LoRASource:
     if missing or unexpected:
         raise ValueError(
             f"Incompatible LightX2V LoRA {path}: missing pairs={missing}; unexpected keys={unexpected}. "
-            "Expected rank-64 pairs targeting Wan2.1-T2V-14B Linears."
+            "Expected LightX2V-style LoRA pairs targeting Wan2.1-T2V-14B Linears."
         )
     if not pairs:
-        raise ValueError(f"LightX2V LoRA {path} contains zero rank-64 Wan DiT Linear pairs.")
+        raise ValueError(f"LightX2V-style LoRA {path} contains zero Wan DiT Linear pairs.")
+    if len(ranks) != 1:
+        raise ValueError(f"LightX2V-style LoRA must have one consistent rank, got {sorted(ranks)}: {path}")
+    rank = next(iter(ranks))
+    if metadata_rank is not None and metadata_rank != rank:
+        raise ValueError(f"LightX2V metadata rank {metadata_rank} does not match tensor rank {rank}: {path}")
     if pairs.keys() & deltas.keys():
         raise ValueError(
             f"LightX2V supplies both a pair and a direct delta for {sorted(pairs.keys() & deltas.keys())}."
@@ -568,28 +590,28 @@ def classify_lightx2v(path: str | PathLike[str]) -> LoRASource:
     )
 
 
-def resolve_lightx2v(filename: str | PathLike[str] | None = None) -> LoRASource:
+def resolve_lightx2v(filename: str | PathLike[str]) -> LoRASource:
     """Resolve the step-distillation LoRA from ComfyUI's loras folder roots."""
-    path = _resolve("loras", (filename if filename is not None else LIGHTX2V_NAME,))
+    path = _resolve("loras", filename)
     return classify_lightx2v(path)
 
 
-def resolve_tokenizer(directory: str | PathLike[str] = "umt5-xxl") -> Path:
-    """Resolve the tokenizer directory, including a nested google/umt5-xxl."""
-    return _resolve("unividx", (directory,), directory=True)
+def resolve_tokenizer(directory: str | PathLike[str]) -> Path:
+    """Resolve an explicit tokenizer directory, such as google/umt5-xxl."""
+    return _resolve("unividx", directory, directory=True)
 
 
 def resolve_models(
     variant: str,
     *,
-    dit: str | PathLike[str] | None = None,
-    vae: str | PathLike[str] | None = None,
-    text_encoder: str | PathLike[str] | None = None,
-    checkpoint: str | PathLike[str] | None = None,
-    tokenizer: str | PathLike[str] = "umt5-xxl",
+    dit: str | PathLike[str],
+    vae: str | PathLike[str],
+    text_encoder: str | PathLike[str],
+    checkpoint: str | PathLike[str],
+    tokenizer: str | PathLike[str],
 ) -> ModelPaths:
     """Resolve all paths for one family; explicit absolute paths work offline."""
-    if variant not in CHECKPOINT_NAMES:
+    if variant not in _VARIANTS:
         raise ValueError(f"Unknown UniVidX variant: {variant!r}")
     return ModelPaths(
         dit=resolve_dit(filename=dit),

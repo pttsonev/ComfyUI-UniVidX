@@ -160,11 +160,13 @@ def test_refusal_names_the_actual_model_when_known(tmp_path, monkeypatch):
         resolve_vae(fake)
 
 
-def test_pth_files_bypass_hash_validation(tmp_path):
-    """A .pth has no readable header; upstream's naming is the only signal."""
+@pytest.mark.parametrize("prefix", [b"PK\x03\x04", b"\x80\x02"])
+@pytest.mark.parametrize("resolve", [resolve_vae, resolve_text_encoder])
+def test_pth_files_with_zip_or_pickle_prefix_pass_format_check(tmp_path, prefix, resolve):
+    """Legacy torch files cannot be hash-validated without loading tensors."""
     legacy = tmp_path / "Wan2.1_VAE.pth"
-    legacy.write_bytes(b"not safetensors")
-    assert resolve_vae(legacy) == legacy.resolve()
+    legacy.write_bytes(prefix + b"legacy torch data")
+    assert resolve(legacy) == legacy.absolute()
 
 
 # --- DiT classification -------------------------------------------------------
@@ -274,7 +276,7 @@ def test_real_wan21_vaes_are_accepted(name):
     path = COMFY_MODELS / "vae" / name
     if not path.is_file():
         pytest.skip(f"{name} not present")
-    assert resolve_vae(path) == path.resolve()
+    assert resolve_vae(path) == path.absolute()
 
 
 @needs_models
@@ -326,4 +328,7 @@ def test_hidden_directories_are_not_resolved(tmp_path, monkeypatch):
     (decoy / "spiece.model.metadata").write_bytes(b"stub")
 
     monkeypatch.setattr(paths, "_model_roots", lambda category: (tmp_path,))
-    assert paths._resolve("unividx", ("umt5-xxl",), directory=True) == real.resolve()
+    assert paths.tokenizer_choices() == ["google/umt5-xxl"]
+    assert paths.resolve_tokenizer("google/umt5-xxl") == real.absolute()
+    with pytest.raises(MissingModelFile):
+        paths.resolve_tokenizer("umt5-xxl")

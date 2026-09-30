@@ -9,7 +9,7 @@ Pair UniVidX with ComfyUI-Gamut for an EXR-native, colour-managed handoff: prepa
 [![Upstream licence: Apache-2.0](https://img.shields.io/badge/upstream-Apache--2.0-blue)](vendor/univid/LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-custom_nodes-orange)](https://github.com/pttsonev/ComfyUI-UniVidX)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)](pyproject.toml)
-[![Version 0.2.0](https://img.shields.io/badge/version-0.2.0-green)](pyproject.toml)
+[![Version 0.3.0](https://img.shields.io/badge/version-0.3.0-green)](pyproject.toml)
 
 ![Landscape plate, albedo, irradiance and normals strip from a 1248x704 clip, 48 frames, production recipe](docs/images/hero_landscape.jpg)
 
@@ -44,19 +44,19 @@ python -m pip install -r requirements.txt
 
 Install a compatible `sageattention` package for the default `attention=sage`, or select `sdpa`. Missing SageAttention is reported as an error. `modelscope` is required by upstream imports even though this pack downloads nothing.
 
-**Place models yourself under `ComfyUI/models/`.** The loader discovers them through `folder_paths` and validates their contents, including complete shard sets.
+**Place models yourself under `ComfyUI/models/`.** Choose every model from its loader dropdown, populated through `folder_paths`; symlinked model folders and files are supported. The loader validates contents, including complete shard sets. Select any one canonical shard to load all six siblings.
 
 <details>
 <summary>Model folders and filenames</summary>
 
-| Model | Folder under `ComfyUI/models/` | File / format |
+| Model | Folder under `ComfyUI/models/` | Dropdown selection / format |
 |---|---|---|
 | Wan2.1-T2V-14B DiT | `diffusion_models/` and subfolders | BF16 six-shard set or scaled FP8 single file, e.g. `Wan2_1-T2V-14B_fp8_e4m3fn_scaled_KJ.safetensors` |
 | Wan2.1 VAE | `vae/` | `wan_2.1_vae.safetensors` |
 | umt5-xxl text encoder | `text_encoders/` | `umt5-xxl-enc-bf16.safetensors` |
 | UniVidX intrinsic / alpha checkpoints | `unividx/` | `univid_intrinsic.safetensors`, `univid_alpha.safetensors` (~1.6 GB total) |
-| umt5 tokenizer | `unividx/umt5-xxl/` | Tokenizer directory |
-| Optional LightX2V rank-64 LoRA | `loras/` | `Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors` (~600 MB) |
+| umt5 tokenizer | `unividx/` | Tokenizer directory, e.g. `google/umt5-xxl` (contains `spiece.model`, `tokenizer.json` or `tokenizer_config.json`) |
+| Optional LightX2V-style LoRA | `loras/` | `Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors` (~600 MB), or a compatible LoRA with a consistent rank |
 
 Obtain the intrinsic and alpha weights from [the UniVidX model repository](https://huggingface.co/houyuanchen/UniVidX). `umt5_xxl_fp16.safetensors` and the Wan2.2 VAE are incompatible look-alikes and are refused.
 
@@ -90,7 +90,7 @@ Find these under `UniVidX/Models`, `UniVidX/Tasks`, `UniVidX/Sampling` and `UniV
 
 | Node | What it does | Key widgets |
 |---|---|---|
-| UniVidX: Load Model | Discover weights and cache the selected model | `variant=intrinsic`, `compute_dtype=bfloat16`, `distillation=none`, `num_persistent_param_in_dit=2e9` |
+| UniVidX: Load Model | Choose weights and cache the selected model | `variant`, `compute_dtype`, `dit`, `vae`, `text_encoder`, `checkpoint`, `tokenizer`, `distillation_lora=none`, `distillation_strength`, `vram_buffer`, `vram_limit`, `num_persistent_param_in_dit=2e9` |
 | UniVidX: Select Task | Choose inputs and generated modalities | `mode=R2AIN` |
 | UniVidX: Sampler | Fit conditioning and run the selected task | `steps`, `input_encoding`, `attention`, `context_enabled`, `context_blend`, `rope_precision` |
 | UniVidX: Decode Intrinsic | Return aligned rgb / albedo / irradiance / normal IMAGEs | No widgets; connect `result` |
@@ -103,7 +103,7 @@ Measured **2026-09-13**, RTX 5090, **704x1248, 189 frames**: **26:17 total**, **
 | Control | Measured recipe | Node default |
 |---|---|---|
 | Model / task | `intrinsic`, `R2AIN`, `bfloat16` | Same |
-| Loader distillation / sampler steps | `distillation=lightx2v`, `distillation_strength=1.0`, `steps=4` | `none`, `1.0`, `50` |
+| Loader distillation / sampler steps | `distillation_lora=Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors`, `distillation_strength=1.0`, `steps=4` | `none`, `1.0`, `50` |
 | Prompt / CFG / seed | Empty prompt, effective CFG `1.0`, seed `0` | Empty prompt forces `1.0` despite widget `5.0`; seed `0` |
 | Width / height / frames | `704` / `1248` / `189` | `640` / `480` / `21` |
 | Context | Enabled; window `21`, stride `16`, blend `cosine` | Disabled; same window / stride / blend |
@@ -150,7 +150,7 @@ From this pack's directory:
 python -m pytest tests -q
 ```
 
-363 offline tests; no torch needed. Changes receive independent review in a fresh thread, with corrections reviewed until `APPROVED` before the integration PR.
+412 offline tests; path and dropdown checks need no torch, while tensor tests skip without it. Changes receive independent review in a fresh thread, with corrections reviewed until `APPROVED` before the integration PR.
 
 ---
 

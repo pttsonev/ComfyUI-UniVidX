@@ -1,9 +1,9 @@
 """Model handle node over the absolute-path loader."""
 
 if "." in __package__:
-    from ..univid import loader
+    from ..univid import loader, paths
 else:
-    from univid import loader
+    from univid import loader, paths
 
 
 _DISTILLATION_TOOLTIP = (
@@ -22,45 +22,32 @@ _VRAM_TOOLTIP = (
 )
 
 
-_AUTO = "auto (discover)"
-
-
-def _model_choices(category: str, label: str):
-    """A dropdown of what is actually on disk, with discovery as the default.
-
-    ComfyUI loaders offer a list, not a text box: a blank field is neither
-    discoverable nor obviously working. The list is built at schema time, when
-    folder_paths is available inside ComfyUI; outside it — tests, a bare import
-    — there is nothing to enumerate, so this degrades to a free-text path rather
-    than presenting an empty menu.
-
-    `auto (discover)` keeps the resolver's own search, which identifies models
-    by content rather than filename and can therefore pick correctly out of a
-    folder holding several look-alikes.
-    """
+def _model_choices(category: str, label: str, *, tokenizer=False, lora=False):
+    """Explicit registry choices in ComfyUI, free-text paths on a bare import."""
+    options = {
+        "tooltip": _DISTILLATION_TOOLTIP if lora else f"Select the {label}; an explicit path is required.",
+    }
+    if lora:
+        options["default"] = "none"
     try:
-        if "." in __package__:
-            from ..univid import paths
-        else:
-            from univid import paths
         registry = paths._get_folder_paths()
         if registry is None:
             raise RuntimeError("no registry")
         if category == "unividx":
             paths.register_model_folder()
-        names = list(registry.get_filename_list(category))
+        names = paths.tokenizer_choices() if tokenizer else list(registry.get_filename_list(category))
+        if category == "unividx" and not tokenizer:
+            # The unividx folder is registered without an extension filter and
+            # also holds the tokenizer and `hf download` .cache stubs; the
+            # checkpoint is only ever loaded as safetensors.
+            names = [
+                name for name in names
+                if name.endswith(".safetensors")
+                and not any(part.startswith(".") for part in name.replace("\\", "/").split("/"))
+            ]
     except Exception:
-        return ("STRING", {
-            "default": "",
-            "tooltip": f"Path to the {label}. Leave blank to discover it automatically.",
-        })
-    return ([_AUTO, *names], {
-        "default": _AUTO,
-        "tooltip": (
-            f"Which {label} to use. '{_AUTO}' searches the registered folders and "
-            "verifies the file by its content rather than its name."
-        ),
-    })
+        return ("STRING", {"default": "", **options})
+    return (["none", *names] if lora else names, options)
 
 
 class UniVidXLoader:
@@ -70,16 +57,6 @@ class UniVidXLoader:
             "required": {
                 "variant": (["intrinsic", "alpha"], {"default": "intrinsic"}),
                 "compute_dtype": (["bfloat16", "float16", "float32"], {"default": "bfloat16"}),
-            },
-            "optional": {
-                "vram_buffer": ("FLOAT", {
-                    "default": 0.5, "min": 0.0, "step": 0.1,
-                    "tooltip": (
-                        "VRAM reserve in GiB; 0.5 is upstream's default. Subtracted from "
-                        "vram_limit (or total VRAM when unset). Ignored with a persistent "
-                        "parameter cap. " + _VRAM_TOOLTIP
-                    ),
-                }),
                 **{
                     name: _model_choices(category, name)
                     for name, category in (
@@ -87,12 +64,19 @@ class UniVidXLoader:
                         ("text_encoder", "text_encoders"), ("checkpoint", "unividx"),
                     )
                 },
-                "distillation": (["none", "lightx2v"], {
-                    "default": "none", "tooltip": _DISTILLATION_TOOLTIP,
-                }),
+                "tokenizer": _model_choices("unividx", "tokenizer directory", tokenizer=True),
+                "distillation_lora": _model_choices("loras", "LightX2V-style LoRA", lora=True),
                 "distillation_strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
                     "tooltip": _DISTILLATION_TOOLTIP,
+                }),
+                "vram_buffer": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "step": 0.1,
+                    "tooltip": (
+                        "VRAM reserve in GiB; 0.5 is upstream's default. Subtracted from "
+                        "vram_limit (or total VRAM when unset). Ignored with a persistent "
+                        "parameter cap. " + _VRAM_TOOLTIP
+                    ),
                 }),
                 "vram_limit": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "step": 0.1,
@@ -121,22 +105,14 @@ class UniVidXLoader:
     DESCRIPTION = "Load or reuse an intrinsic or alpha model from ComfyUI's model folders."
 
     def load(
-        self, variant="intrinsic", compute_dtype="bfloat16", vram_buffer=0.5,
-        dit=_AUTO, vae=_AUTO, text_encoder=_AUTO, checkpoint=_AUTO,
-        distillation="none", distillation_strength=1.0,
-        vram_limit=0.0, num_persistent_param_in_dit=2_000_000_000,
+        self, variant, compute_dtype, dit, vae, text_encoder, checkpoint, tokenizer,
+        distillation_lora="none", distillation_strength=1.0,
+        vram_buffer=0.5, vram_limit=0.0, num_persistent_param_in_dit=2_000_000_000,
     ):
-        # Both the dropdown's discovery sentinel and an empty text field (the
-        # fallback outside ComfyUI) mean "let the resolver find it".
-        overrides = {
-            name: (None if value.strip() in ("", _AUTO) else value.strip())
-            for name, value in (
-                ("dit", dit), ("vae", vae), ("text_encoder", text_encoder), ("checkpoint", checkpoint),
-            )
-            if value is not None
-        }
         return (loader.load_model(
             variant, compute_dtype=compute_dtype, vram_buffer=vram_buffer,
+            dit=dit, vae=vae, text_encoder=text_encoder, checkpoint=checkpoint, tokenizer=tokenizer,
             vram_limit=vram_limit, num_persistent_param_in_dit=num_persistent_param_in_dit,
-            distillation=distillation, distillation_strength=distillation_strength, **overrides,
+            distillation_lora=None if distillation_lora == "none" else distillation_lora,
+            distillation_strength=distillation_strength,
         ),)

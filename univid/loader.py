@@ -13,8 +13,8 @@ mutually exclusive; the cap makes upstream ignore the limit and buffer. Lower
 residency trades wall time for memory without changing weights or compute dtype.
 The text encoder already onloads to CPU in both strategies.
 
-The cache is keyed on fully resolved settings and bounded to ONE handle by
-default, evicting the previous model *before* allocating a replacement — a BF16
+The cache uses absolute paths without following symlinks and retains ONE handle
+by default, evicting the previous model *before* allocating a replacement — a BF16
 DiT is ~28 GB of host RAM, and simply nudging `vram_buffer` in the UI produces a
 new key. Raise `UNIVIDX_MODEL_CACHE_MAX` only with the RAM to match.
 
@@ -421,15 +421,15 @@ def _build_model(
 def load_model(
     variant: str,
     *,
-    dit: str | PathLike[str] | None = None,
-    vae: str | PathLike[str] | None = None,
-    text_encoder: str | PathLike[str] | None = None,
-    checkpoint: str | PathLike[str] | None = None,
-    tokenizer: str | PathLike[str] = "umt5-xxl",
+    dit: str | PathLike[str],
+    vae: str | PathLike[str],
+    text_encoder: str | PathLike[str],
+    checkpoint: str | PathLike[str],
+    tokenizer: str | PathLike[str],
     compute_dtype: str = "bfloat16",
     device: str = "cuda",
     vram_buffer: float = 0.5,
-    distillation: str = "none",
+    distillation_lora: str | None = None,
     distillation_strength: float = 1.0,
     vram_limit: float | None = None,
     num_persistent_param_in_dit: int | None = None,
@@ -446,8 +446,6 @@ def load_model(
         raise ValueError(f"Unknown UniVidX variant: {variant!r}")
     if compute_dtype not in {"bfloat16", "float16", "float32"}:
         raise ValueError(f"Unsupported UniVidX compute dtype: {compute_dtype!r}")
-    if distillation not in {"none", "lightx2v"}:
-        raise ValueError(f"Unknown UniVidX distillation option: {distillation!r}")
     distillation_strength = float(distillation_strength)
     if not math.isfinite(distillation_strength) or not 0 <= distillation_strength <= 2:
         raise ValueError("distillation_strength must be a finite number between 0.0 and 2.0.")
@@ -490,14 +488,17 @@ def load_model(
             variant, dit=dit, vae=vae, text_encoder=text_encoder,
             checkpoint=checkpoint, tokenizer=tokenizer,
         )
-        distillation_source = paths.resolve_lightx2v() if distillation == "lightx2v" else None
+        distillation_source = (
+            None if distillation_lora in (None, "none")
+            else paths.resolve_lightx2v(distillation_lora)
+        )
+        distillation_lora = str(distillation_source.path) if distillation_source is not None else None
         config = _vendor_config()
         key = (
             variant, resolved.dit.kind, resolved.dit.paths, resolved.vae,
             resolved.text_encoder, resolved.checkpoint, resolved.tokenizer,
             config, compute_dtype, device, vram_buffer,
-            distillation, distillation_strength,
-            distillation_source.path if distillation_source is not None else None,
+            distillation_lora, distillation_strength,
             vram_limit, num_persistent_param_in_dit,
         )
         if key in _MODEL_CACHE:
@@ -522,7 +523,8 @@ def load_model(
                 variant=variant, model=model, model_paths=resolved,
                 compute_dtype=compute_dtype, device=device, vram_buffer=vram_buffer,
                 load_reports=reports,
-                distillation=distillation, distillation_strength=distillation_strength,
+                distillation="lightx2v" if distillation_source is not None else "none",
+                distillation_strength=distillation_strength,
                 distillation_path=distillation_source.path if distillation_source is not None else None,
                 vram_limit=vram_limit, num_persistent_param_in_dit=num_persistent_param_in_dit,
             )

@@ -17,6 +17,11 @@ import pytest
 from univid import loader, paths
 
 
+_MODEL_SELECTIONS = dict(
+    dit="dit", vae="vae", text_encoder="text", checkpoint="checkpoint", tokenizer="tokenizer",
+)
+
+
 torch = pytest.importorskip("torch", reason="dequantisation tests need real tensors")
 
 
@@ -211,7 +216,7 @@ def test_bad_arguments_are_refused_before_touching_torch(kwargs, match, monkeypa
     monkeypatch.setattr(loader, "_get_torch", _explode)
     variant = kwargs.pop("variant")
     with pytest.raises(ValueError, match=match):
-        loader.load_model(variant, **kwargs)
+        loader.load_model(variant, **_MODEL_SELECTIONS, **kwargs)
 
 
 # --- vendor import guard ------------------------------------------------------
@@ -315,8 +320,8 @@ def test_changing_vram_buffer_does_not_retain_the_previous_model(monkeypatch):
     """The exact reported case: buffer 0.5 -> 1.0 must not leave two handles."""
     built = []
     _stub_build(monkeypatch, built)
-    loader.load_model("intrinsic", vram_buffer=0.5)
-    loader.load_model("intrinsic", vram_buffer=1.0)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=0.5)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=1.0)
     assert len(built) == 2, "a changed buffer should build a new model"
     assert len(loader._MODEL_CACHE) == 1, "the previous handle must not be retained"
 
@@ -324,8 +329,8 @@ def test_changing_vram_buffer_does_not_retain_the_previous_model(monkeypatch):
 def test_switching_variant_does_not_retain_the_previous_model(monkeypatch):
     built = []
     _stub_build(monkeypatch, built)
-    loader.load_model("intrinsic")
-    loader.load_model("alpha")
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS)
+    loader.load_model("alpha", **_MODEL_SELECTIONS)
     assert len(loader._MODEL_CACHE) == 1
 
 
@@ -333,8 +338,8 @@ def test_identical_settings_reuse_the_cached_handle(monkeypatch):
     """Bounding must not turn every queue into a 28 GB reload."""
     built = []
     _stub_build(monkeypatch, built)
-    first = loader.load_model("intrinsic", vram_buffer=0.5)
-    second = loader.load_model("intrinsic", vram_buffer=0.5)
+    first = loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=0.5)
+    second = loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=0.5)
     assert first is second
     assert len(built) == 1
 
@@ -351,8 +356,8 @@ def test_eviction_happens_before_the_replacement_is_built(monkeypatch):
         return marker, ()
 
     monkeypatch.setattr(loader, "_build_model", _build)
-    loader.load_model("intrinsic", vram_buffer=0.5)
-    loader.load_model("intrinsic", vram_buffer=1.0)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=0.5)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=1.0)
     assert observed == [0, 0], "the cache must be empty while a replacement is built"
 
 
@@ -369,8 +374,8 @@ def test_raised_limit_retains_more_than_one(monkeypatch):
     built = []
     _stub_build(monkeypatch, built)
     monkeypatch.setenv("UNIVIDX_MODEL_CACHE_MAX", "2")
-    loader.load_model("intrinsic", vram_buffer=0.5)
-    loader.load_model("intrinsic", vram_buffer=1.0)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=0.5)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=1.0)
     assert len(loader._MODEL_CACHE) == 2
 
 
@@ -379,10 +384,10 @@ def test_reuse_refreshes_recency(monkeypatch):
     built = []
     _stub_build(monkeypatch, built)
     monkeypatch.setenv("UNIVIDX_MODEL_CACHE_MAX", "2")
-    first = loader.load_model("intrinsic", vram_buffer=0.5)
-    loader.load_model("intrinsic", vram_buffer=1.0)
-    loader.load_model("intrinsic", vram_buffer=0.5)
-    loader.load_model("intrinsic", vram_buffer=2.0)
+    first = loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=0.5)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=1.0)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=0.5)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_buffer=2.0)
     assert first in loader._MODEL_CACHE.values()
 
 
@@ -410,7 +415,7 @@ def test_vram_arguments_are_validated_before_torch(kwargs, match, monkeypatch):
 
     monkeypatch.setattr(loader, "_get_torch", _explode)
     with pytest.raises(ValueError, match=match):
-        loader.load_model("intrinsic", **kwargs)
+        loader.load_model("intrinsic", **_MODEL_SELECTIONS, **kwargs)
 
 
 def test_unset_sentinels_are_not_treated_as_both_set(monkeypatch):
@@ -420,7 +425,7 @@ def test_unset_sentinels_are_not_treated_as_both_set(monkeypatch):
     """
     built = []
     _stub_build(monkeypatch, built)
-    loader.load_model("intrinsic", vram_limit=0.0, num_persistent_param_in_dit=-1)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, vram_limit=0.0, num_persistent_param_in_dit=-1)
     assert len(built) == 1
 
 
@@ -429,7 +434,7 @@ def test_unset_sentinels_are_not_treated_as_both_set(monkeypatch):
     [
         ({"vram_limit": 8.0}, {"vram_limit": 12.0}),
         ({"num_persistent_param_in_dit": 0}, {"num_persistent_param_in_dit": 5000}),
-        ({}, {"distillation": "lightx2v"}),
+        ({}, {"distillation_lora": "lx2v.safetensors"}),
         ({"distillation_strength": 1.0}, {"distillation_strength": 0.5}),
     ],
 )
@@ -445,6 +450,6 @@ def test_changing_a_residency_or_distill_setting_rebuilds(first, second, monkeyp
         ),
         raising=False,
     )
-    loader.load_model("intrinsic", **first)
-    loader.load_model("intrinsic", **second)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, **first)
+    loader.load_model("intrinsic", **_MODEL_SELECTIONS, **second)
     assert len(built) == 2, "the second settings must not reuse the first handle"

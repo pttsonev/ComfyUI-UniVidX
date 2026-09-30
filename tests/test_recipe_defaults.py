@@ -28,7 +28,7 @@ def test_rope_precision_defaults_to_float32():
 
 
 def test_persistent_parameter_cap_defaults_to_2e9():
-    widget = UniVidXLoader.INPUT_TYPES()["optional"]["num_persistent_param_in_dit"]
+    widget = UniVidXLoader.INPUT_TYPES()["required"]["num_persistent_param_in_dit"]
     assert widget[1]["default"] == 2_000_000_000
     default = signature(UniVidXLoader.load).parameters["num_persistent_param_in_dit"].default
     assert default == 2_000_000_000
@@ -36,19 +36,18 @@ def test_persistent_parameter_cap_defaults_to_2e9():
 
 def test_readme_attributes_historical_measurement_to_sage_and_explicit_cap():
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
-    history = readme.split("**Historical measurement (2026-09-10):**", 1)[1].split("\n\n", 1)[0]
-    history = " ".join(history.split())
+    recipe = readme.split("## Production recipe", 1)[1].split("\n## ", 1)[0]
+    recipe = " ".join(recipe.split())
     for setting in (
-        "189 frames at 704x1248 in 40:11",
-        "`attention=sage` (SageAttention 1.0.6)",
-        "`num_persistent_param_in_dit=8e9`",
-        "`distillation=lightx2v` at 4 steps",
-        "an empty prompt (CFG 1.0)",
-        "context windows 21/12",
-        "`triangular` blending and `float64` RoPE",
-        "`vram_limit` unset",
-        "8e9 cap was withdrawn on 2026-09-12",
-        "<= 4e9 with SageAttention 1.0.6",
+        "Measured **2026-09-13**",
+        "**704x1248, 189 frames**",
+        "**26:17 total**",
+        "**28.9 s per window-step**",
+        "**15.2 GiB peak** with SageAttention 2.2.0",
+        "`num_persistent_param_in_dit=2e9`",
+        "`vram_limit=0` (unset)",
+        "`distillation_lora=Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors`",
+        "`steps=4`",
+        "Never set the residency cap to `4e9` with SageAttention 2.2.0",
     ):
-        assert setting in history
-    assert "2026-09-10 numbers were measured with" not in readme
+        assert setting in recipe
